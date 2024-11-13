@@ -1,0 +1,177 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <DHT.h>
+
+// Pin Definitions
+#define DHTPIN 32
+#define LED_GREEN 25
+#define LED_YELLOW 26
+#define LED_RED 27
+#define RELAY_PUMP 35
+#define BUZZER 33
+
+// DHT Sensor
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+// WiFi credentials
+const char* ssid = "Wokwi-Guest";
+const char* password = "";
+
+// MQTT Broker settings
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;  // 
+const char* mqtt_client_id = "b8dff2c1-a2f3-4e35-9d7a-af93b4137e69";  
+const char* mqtt_topic_pub = "hydroponics/sensors";
+const char* mqtt_topic_sub = "hydroponics/control";
+
+// Objects
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Variables
+float temperature = 0;
+float humidity = 0;
+float turbidity = 0;
+float ph = 0;
+bool pumpStatus = false;
+
+// Timing variables
+unsigned long lastMsg = 0;
+const long interval = 5000;  // Publish every 5 seconds
+
+void setup_wifi() {
+  delay(10);
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, message);
+  
+  if (!error) {
+    if (doc.containsKey("pump")) {
+      pumpStatus = doc["pump"].as<bool>();
+      digitalWrite(RELAY_PUMP, pumpStatus);
+    }
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    
+    if (client.connect(mqtt_client_id)) {  // Using fixed client ID
+      Serial.println("connected");
+      client.subscribe(mqtt_topic_sub);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retrying in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize pins
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(RELAY_PUMP, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  
+  // Initialize DHT sensor
+  dht.begin();
+  
+  // Connect to WiFi
+  setup_wifi();
+  
+  // Configure MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+void readSensors() {
+  // Read DHT sensor
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+  
+  // Simulate turbidity and pH readings (replace with actual sensor readings)
+  turbidity = random(0, 100) / 10.0;
+  ph = random(60, 80) / 10.0;
+  
+  // Update LED indicators based on pH
+  if (ph < 6.0) {
+    digitalWrite(LED_RED, HIGH);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(BUZZER, HIGH);
+  } else if (ph > 7.0) {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_YELLOW, HIGH);
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(BUZZER, HIGH);
+  } else {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(BUZZER, LOW);
+  }
+}
+
+void publishData() {
+  StaticJsonDocument<200> doc;
+  
+  doc["temperature"] = temperature;
+  doc["humidity"] = humidity;
+  doc["turbidity"] = turbidity;
+  doc["ph"] = ph;
+  doc["pump"] = pumpStatus;
+  
+  char buffer[200];
+  serializeJson(doc, buffer);
+  
+  client.publish(mqtt_topic_pub, buffer);
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  unsigned long now = millis();
+  if (now - lastMsg > interval) {
+    lastMsg = now;
+    
+    readSensors();
+    publishData();
+    
+    // Debug output
+    Serial.println("Sensor Readings:");
+    Serial.printf("Temperature: %.2f°C\n", temperature);
+    Serial.printf("Humidity: %.2f%%\n", humidity);
+    Serial.printf("Turbidity: %.2f NTU\n", turbidity);
+    Serial.printf("pH: %.2f\n", ph);
+    Serial.printf("Pump Status: %s\n", pumpStatus ? "ON" : "OFF");
+    Serial.println("-------------------");
+  }
+}
